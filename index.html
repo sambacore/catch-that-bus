@@ -12514,8 +12514,8 @@ const LEVELS = [
    ]
   ],
   "player": {
-   "x": 5.5,
-   "y": 27.5,
+   "x": 11.5,
+   "y": 26.5,
    "angle": -0.7
   },
   "enemies": [
@@ -16167,6 +16167,29 @@ function runEndingCinematic(cnv) {
   const n = parseInt(p, 10);
   if (isNaN(n) || n < 1 || n > LEVELS.length) return;
   startGame(n - 1);
+})();
+
+// ---- SPAWN SANITY CHECK — every level's player start must be on open floor
+// with at least one walkable neighbor. (A vault-seal once walled E1M10's spawn
+// into a stone tile; the player materialized inside a wall and couldn't move.)
+(function validateSpawns() {
+  const walk = t => t === 0 || t === 5;
+  LEVELS.forEach((lvl, i) => {
+    const g = lvl.map, cx = Math.floor(lvl.player.x), cy = Math.floor(lvl.player.y);
+    const problems = [];
+    if (cy < 0 || cy >= g.length || cx < 0 || cx >= g[0].length) problems.push('out of bounds');
+    else {
+      if (!walk(g[cy][cx])) problems.push(`spawn cell (${cx},${cy}) is solid tile ${g[cy][cx]}`);
+      const n4 = [[1,0],[-1,0],[0,1],[0,-1]].filter(([dx, dy]) => {
+        const ny = cy + dy, nx = cx + dx;
+        return ny >= 0 && ny < g.length && nx >= 0 && nx < g[0].length && walk(g[ny][nx]);
+      });
+      if (!n4.length && !problems.length) problems.push('fully enclosed by solids');
+    }
+    if (problems.length) {
+      console.error(`LEVEL DATA BUG — ${lvl.name}: ${problems.join('; ')}`);
+    }
+  });
 })();
 </script>
 </body>
