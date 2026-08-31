@@ -12,7 +12,7 @@
 <title>CATCH THAT BUS</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Courier New', monospace; touch-action: none; overscroll-behavior: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 #game-canvas { display: block; width: 100%; height: 100%; touch-action: none; image-rendering: pixelated; }
 
 #hud { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
@@ -14682,29 +14682,37 @@ const btnMap = document.getElementById('btn-map');
 btnMap.addEventListener('touchstart', e => { e.preventDefault(); toggleMinimap(); }, { passive: false });
 btnMap.addEventListener('click', e => { e.preventDefault(); toggleMinimap(); });
 
-// Touch-look on canvas (right side only, above controls)
+// Touch-look on canvas — ANY canvas touch steers the view. (The old
+// x>35% / y<80% gate left two dead zones where a look drag silently did
+// nothing; the joystick element handles its own touches, and the FIRE
+// button zone it avoided was removed long ago.)
 let touchLookId = null, touchLookX = 0;
 // Tap-to-fire on canvas (fire button removed) — quick taps fire, drags only look.
 let touchMoved = false;
 let lastTouchEndTs = 0;
 canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); // kill iOS double-tap zoom / callout at the source
   touchMoved = false;
-  for (const t of e.changedTouches) {
-    if (t.clientX > window.innerWidth * 0.35 && t.clientY < window.innerHeight * 0.8) {
-      touchLookId = t.identifier; touchLookX = t.clientX;
-    }
+  // First unclaimed canvas touch becomes the look touch; extra fingers ignored.
+  if (touchLookId === null) {
+    const t = e.changedTouches[0];
+    touchLookId = t.identifier; touchLookX = t.clientX;
   }
-}, { passive: true });
+}, { passive: false });
 canvas.addEventListener('touchmove', e => {
+  e.preventDefault(); // passive:false — iOS must never scroll/zoom mid-look
   for (const t of e.changedTouches) {
     if (t.identifier === touchLookId && state === 'playing') {
-      player.angle += (t.clientX - touchLookX) * 0.008;
-      if (Math.abs(t.clientX - touchLookX) > 8) touchMoved = true;
-      touchLookX = t.clientX;
+      const raw = t.clientX - touchLookX;
+      if (Math.abs(raw) > 8) touchMoved = true;
+      player.angle += raw * 0.008;
+      // per-event clamp: a stolen 200px pointer jump can't whip the camera
+      touchLookX = Math.max(touchLookX - 140, Math.min(t.clientX, touchLookX + 140));
     }
   }
-}, { passive: true });
+}, { passive: false });
 canvas.addEventListener('touchend', e => {
+  e.preventDefault();
   for (const t of e.changedTouches) {
     if (t.identifier === touchLookId) {
       touchLookId = null;
@@ -14712,7 +14720,15 @@ canvas.addEventListener('touchend', e => {
       if (!touchMoved && state === 'playing') shoot(); // tap = fire
     }
   }
-}, { passive: true });
+}, { passive: false });
+// iOS fires touchcancel when a system gesture (edge swipe, notification
+// pull, app switcher) steals the touch — without this the look touch
+// stays "claimed" forever and look is dead until reload.
+canvas.addEventListener('touchcancel', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touchLookId) touchLookId = null;
+  }
+});
 
 const isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || ('ontouchstart' in window);
 if (isMobile) {
