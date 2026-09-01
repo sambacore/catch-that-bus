@@ -139,6 +139,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font
   pointer-events: none;
 }
 #ending canvas { position: absolute; top: 0; left: 0; display: block; }
+#ending-black {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  background: #000; opacity: 0; transition: opacity 1.15s ease;
+}
+#ending-flash {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  background: #fff8e8; opacity: 0; pointer-events: none;
+}
 #ending-text {
   position: absolute; top: 30%; left: 0; width: 100%;
   text-align: center; font-family: 'Courier New', monospace;
@@ -222,7 +230,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font
 </div>
 
 <div id="ending">
+  <div id="ending-black"></div>
   <canvas id="ending-canvas"></canvas>
+  <div id="ending-flash"></div>
   <div id="ending-text">UPTOWN, HERE WE COME!</div>
 </div>
 
@@ -15235,7 +15245,7 @@ function update() {
 
 // ---- RENDER ----
 let FOV = 60 * DEG;
-const MAX_DEPTH = 24;
+const MAX_DEPTH = 46;
 
 // Stable per-tile+type hash for variant selection (re-seeded per page load)
 const variantSeed = (Math.random() * 0xffff) | 0;
@@ -15536,6 +15546,23 @@ function render() {
       }
     } else {
       zBuffer[i] = MAX_DEPTH;
+      // Escape ray — no wall up to MAX_DEPTH. In the ending cinematic's
+      // breached depot this is the maw: paint void black ONLY within the
+      // breached wall's own silhouette (its slice height at the breach
+      // plane), so the hole reads as a gap IN the wall — sky above,
+      // floor below — never a full-height stripe swallowing the screen.
+      if (endingActive && rdy > 0.0001 && player.y < 29) {
+        const tC = (29.0 - player.y) / rdy;              // cross breach plane
+        const mc = Math.floor(player.x + tC * rdx);
+        if (mc >= 13 && mc <= 19) {                      // through the breach
+          const perpW = tC * Math.cos(rayAngle - player.angle);
+          if (perpW > 0.05) {
+            const apH = H / perpW;                       // wall slice height
+            ctx.fillStyle = '#000';
+            ctx.fillRect(i * stripW, viewY - apH / 2, stripW + 0.6, apH);
+          }
+        }
+      }
     }
   }
 
@@ -15870,34 +15897,6 @@ gameLoop();
   }
 })();
 
-// ============================================================
-// ENDING CINEMATIC — seat press → fade to black → night street
-// behind the bus. Ignition (tail lights + rumble), it pulls away
-// from the camera, exhaust clouds the lens, "UPTOWN, HERE WE
-// COME!" fades in, freeze until tapped → reload to title.
-// ============================================================
-let endingActive = false;
-
-function startEnding() {
-  if (endingActive) return;
-  endingActive = true;
-  state = 'ended';
-  firing = false;
-  if (document.pointerLockElement) document.exitPointerLock();
-  document.getElementById('hud').style.display = 'none';
-  document.getElementById('mobile-controls').style.display = 'none';
-  document.getElementById('win-screen').style.display = 'none';
-  const overlay = document.getElementById('ending');
-  const cnv = document.getElementById('ending-canvas');
-  cnv.width = window.innerWidth; cnv.height = window.innerHeight;
-  // Overlay starts transparent (game still visible) and fades to opaque
-  // black: the fade-to-black. The street canvas fades in separately after.
-  overlay.style.display = 'block';
-  requestAnimationFrame(() => { overlay.style.opacity = '1'; });
-  endingAudio();
-  runEndingCinematic(cnv);
-}
-
 function endingAudio() {
   try {
     const AC = new (window.AudioContext || window.webkitAudioContext)();
@@ -15983,25 +15982,71 @@ function mulberry32(a) {
   };
 }
 
+
+// ============================================================
+// ENDING CINEMATIC (engine-mode) — seat press → the game's own
+// raycaster renders a directed shot: chase-cam behind a bus
+// billboard in the depot, ignition, rev-up, charge, and the bus
+// CRASHES THROUGH THE DEPOT WALL (real tile mutation → real
+// lighting/occlusion), rubble + embers + dust, then the text,
+// freeze until tapped → reload to title.
+// ============================================================
+let endingActive = false;
+
+function startEnding() {
+  if (endingActive) return;
+  endingActive = true;
+  state = 'ended';
+  firing = false;
+  if (document.pointerLockElement) document.exitPointerLock();
+  document.getElementById('hud').style.display = 'none';
+  document.getElementById('mobile-controls').style.display = 'none';
+  document.getElementById('win-screen').style.display = 'none';
+  const overlay = document.getElementById('ending');
+  const cnv = document.getElementById('ending-canvas');
+  cnv.width = window.innerWidth; cnv.height = window.innerHeight;
+  // Fade to black first (overlay is opaque), then the engine shot
+  // fades back in from black under the same overlay.
+  // Engine mode: the overlay itself is transparent (the live raycaster
+  // shows through); all fades ride the #ending-black child layer.
+  overlay.style.display = 'block';
+  overlay.style.background = 'transparent';
+  overlay.style.opacity = '1';
+  document.getElementById('ending-black').style.opacity = '1';
+  endingAudio();
+  runEndingCinematic(cnv);
+}
+
 function runEndingCinematic(cnv) {
   const x = cnv.getContext('2d');
   const W = cnv.width, H = cnv.height;
-  const rng = mulberry32(3107);
+  const rng = mulberry32(4510);
 
-  // ---- depot interior geometry (relative to viewport) ----
-  const wallTop = H * 0.17;
-  const wallBase = H * 0.62;
-  const holeW = W * 0.36, holeH = holeW * 0.46;
-  const holeCx = W * 0.5;
-  const holeBot = wallBase - H * 0.012, holeTop = holeBot - holeH, holeCy = (holeTop + holeBot) / 2;
+  // Stage the world for the shot: fresh L10 map, empty floor where the
+  // bus hull was (the bus becomes a billboard), no monsters/pickups.
+  enemies = []; pickups = [];
+  for (let yy = 13; yy <= 17; yy++)
+    for (let xx = 13; xx <= 19; xx++) map[yy][xx] = 0;
+  doorStates = {}; switchStates = [];
 
-  const IGN = 700, REV = 2600, CRASH = 5600, TEXT = 9300, FREEZE = 13100;
-  const puffs = [], chunks = [], embers = [];
-  let raf = 0, startTs = 0, textShown = false, puffClock = 0, dustClock = 0,
-      frozen = false, boomed = false, revved = false, flash = 0,
-      sceneC = null, holePts = null;
+  // Camera + bus rig
+  const BX = 16.5;                 // bus lane x (bus drives +y)
+  window.FOV = 78 * DEG;
+  window._hideGun = true;
+  const cam = { x: 16.5, y: 12.8 };
+  const bus = { y: 14.6, v: 0 };
+  const CRASH_Z = 29.55;           // wall plane (row 30) minus half bus
+  const IGN = 700, REV = 1800, DRIVE = 2100, CRASH = 5950,
+        TEXT = 9800, FREEZE = 12800;
+
+  let raf = 0, startTs = 0, frozen = false, boomed = false,
+      revved = false, textShown = false, seekT = -1, holdT = -1;
+  const chunks = [], embers = [], dust = [];
+  let smokeClock = 0; // post-crash engine smoke pump
 
   const overlay = document.getElementById('ending');
+  const blackL = document.getElementById('ending-black');
+  const flashL = document.getElementById('ending-flash');
   // tap anywhere (after freeze) → reload to the title screen (?level=
   // param must be stripped or the reload deep-links straight back in)
   overlay.addEventListener('pointerdown', () => {
@@ -16018,416 +16063,447 @@ function runEndingCinematic(cnv) {
     try { endingAudio.ctx && endingAudio.ctx.suspend(); } catch (e) {}
   }
 
-  // ---- the depot interior, pre-rendered once (procedural, matches the level) ----
-  const scene = document.createElement('canvas');
-  scene.width = W; scene.height = H;
-  (function paintScene() {
-    const s = scene.getContext('2d');
-    // ceiling
-    const ceil = s.createLinearGradient(0, 0, 0, wallTop);
-    ceil.addColorStop(0, '#070405'); ceil.addColorStop(1, '#150a0c');
-    s.fillStyle = ceil; s.fillRect(0, 0, W, wallTop);
-    // far wall — mottled maroon panels
-    const wg = s.createLinearGradient(0, wallTop, 0, wallBase);
-    wg.addColorStop(0, '#2b1216'); wg.addColorStop(0.5, '#3d1c20'); wg.addColorStop(1, '#2a1114');
-    s.fillStyle = wg; s.fillRect(0, wallTop, W, wallBase - wallTop);
-    for (let i = 0; i < 260; i++) {
-      s.globalAlpha = 0.04 + rng() * 0.09;
-      s.fillStyle = rng() > 0.5 ? '#1a0b0d' : '#5a2c31';
-      s.fillRect(rng() * W, wallTop + rng() * (wallBase - wallTop),
-                 W * (0.01 + rng() * 0.08), (wallBase - wallTop) * (0.04 + rng() * 0.20));
-    }
-    s.globalAlpha = 1;
-    // vertical panel seams
-    s.strokeStyle = 'rgba(12,5,6,0.55)'; s.lineWidth = Math.max(1, W * 0.0022);
-    for (let px = W * 0.045; px < W; px += W * 0.09) {
-      s.beginPath(); s.moveTo(px, wallTop); s.lineTo(px, wallBase); s.stroke();
-    }
-    // conduit pipe + brackets
-    const py = wallTop + (wallBase - wallTop) * 0.24;
-    s.fillStyle = '#170a0c'; s.fillRect(0, py, W, Math.max(3, H * 0.006));
-    s.fillStyle = '#0d0506';
-    for (let px = W * 0.06; px < W; px += W * 0.12)
-      s.fillRect(px, py - H * 0.002, Math.max(2, W * 0.004), Math.max(5, H * 0.010));
-    // hazard band above the skirting
-    s.save();
-    const hz = wallBase - H * 0.030;
-    s.beginPath(); s.rect(0, hz, W, H * 0.016); s.clip();
-    s.fillStyle = 'rgba(122,94,26,0.30)';
-    for (let px = -H * 0.05; px < W + H * 0.05; px += H * 0.045) {
-      s.beginPath();
-      s.moveTo(px, hz + H * 0.016); s.lineTo(px + H * 0.014, hz);
-      s.lineTo(px + H * 0.030, hz); s.lineTo(px + H * 0.016, hz + H * 0.016);
-      s.closePath(); s.fill();
-    }
-    s.restore();
-    // side walls converging on the bus lane
-    for (const sgn of [-1, 1]) {
-      const g2 = s.createLinearGradient(sgn < 0 ? 0 : W, 0, sgn < 0 ? W * 0.16 : W * 0.84, 0);
-      g2.addColorStop(0, '#0b0506'); g2.addColorStop(1, '#241013');
-      s.fillStyle = g2;
-      s.beginPath();
-      s.moveTo(sgn < 0 ? 0 : W, 0); s.lineTo(sgn < 0 ? 0 : W, H);
-      s.lineTo(sgn < 0 ? W * 0.055 : W * 0.945, wallBase);
-      s.lineTo(sgn < 0 ? W * 0.150 : W * 0.850, wallTop);
-      s.closePath(); s.fill();
-    }
-    // hanging teeth along the ceiling ledge
-    s.fillStyle = '#0e0506';
-    for (let i = 0; i < 26; i++) {
-      const tx = rng() * W, ty = wallTop * (0.30 + rng() * 0.55), th = H * (0.012 + rng() * 0.030);
-      s.beginPath();
-      s.moveTo(tx - th * 0.32, ty); s.lineTo(tx + th * 0.32, ty); s.lineTo(tx, ty + th);
-      s.closePath(); s.fill();
-    }
-    // depot floor
-    const fg = s.createLinearGradient(0, wallBase, 0, H);
-    fg.addColorStop(0, '#120708'); fg.addColorStop(1, '#221010');
-    s.fillStyle = fg; s.fillRect(0, wallBase, W, H - wallBase);
-    // worn lane guides converging on the breach
-    s.strokeStyle = 'rgba(170,140,60,0.20)'; s.lineWidth = Math.max(2, W * 0.004);
-    s.beginPath();
-    s.moveTo(W * 0.335, H); s.lineTo(holeCx - holeW * 0.30, wallBase);
-    s.moveTo(W * 0.665, H); s.lineTo(holeCx + holeW * 0.30, wallBase);
-    s.stroke();
-    // oil grime
-    for (let i = 0; i < 14; i++) {
-      s.globalAlpha = 0.05 + rng() * 0.07;
-      s.fillStyle = '#0c0505';
-      s.beginPath();
-      s.ellipse(rng() * W, wallBase + rng() * (H - wallBase),
-                W * (0.01 + rng() * 0.05), (H - wallBase) * (0.01 + rng() * 0.05), 0, 0, PI2);
-      s.fill();
-    }
-    s.globalAlpha = 1;
-    // red service strip where floor meets wall
-    s.fillStyle = 'rgba(122,22,16,0.55)';
-    s.fillRect(0, wallBase - Math.max(1, H * 0.002), W, Math.max(2, H * 0.004));
-  })();
-
-  // ---- wall breach: jagged hole, generated at impact, punched from a scene copy ----
-  function jagPath(c) {
-    if (!holePts) {
-      holePts = [];
-      for (let k = 0; k < 22; k++) {
-        const a = (k / 22) * PI2;
-        holePts.push([
-          holeCx + Math.cos(a) * (holeW / 2) * (0.84 + rng() * 0.32),
-          holeCy + Math.sin(a) * (holeH / 2) * (0.82 + rng() * 0.34)
-        ]);
-      }
-    }
-    c.beginPath();
-    holePts.forEach((pt, k) => { if (!k) c.moveTo(pt[0], pt[1]); else c.lineTo(pt[0], pt[1]); });
-    c.closePath();
-  }
-  function cutScene() {
-    sceneC = document.createElement('canvas');
-    sceneC.width = W; sceneC.height = H;
-    const c = sceneC.getContext('2d');
-    c.drawImage(scene, 0, 0);
-    c.globalCompositeOperation = 'destination-out';
-    c.fillStyle = '#000'; jagPath(c); c.fill();
-    c.globalCompositeOperation = 'source-over';
-    c.strokeStyle = 'rgba(8,3,4,0.9)'; c.lineWidth = Math.max(3, holeW * 0.032);
-    jagPath(c); c.stroke();
-    // rubble lip clinging to the bottom edge
-    for (let k = 0; k < 16; k++) {
-      const rx = holeCx - holeW * 0.42 + rng() * holeW * 0.84;
-      const ry = holeBot - rng() * holeH * 0.14;
-      c.fillStyle = rng() > 0.5 ? '#1e0e10' : '#14090a';
-      c.beginPath();
-      c.moveTo(rx - holeW * 0.020, ry); c.lineTo(rx + holeW * 0.020, ry);
-      c.lineTo(rx, ry - holeH * (0.06 + rng() * 0.08));
-      c.closePath(); c.fill();
-    }
-  }
-
-  // hairline cracks that creep outward while the bus hammers toward the wall
-  const CRACKS = (() => {
-    const arms = [];
-    const dirs = [[-0.16, -0.06], [-0.05, -0.13], [0.13, -0.07], [0.06, 0.02]];
-    for (const [dx2, dy2] of dirs) {
-      const pts = [[holeCx + dx2 * holeW * 0.55, holeCy + dy2 * holeH * 0.55]];
-      let cx0 = holeCx + dx2 * holeW * 0.55, cy0 = holeCy + dy2 * holeH * 0.55;
-      for (let k = 0; k < 6; k++) {
-        cx0 += dx2 * holeW * 0.20 + (rng() - 0.5) * holeW * 0.05;
-        cy0 += dy2 * holeH * 0.80 + (rng() - 0.5) * holeH * 0.05;
-        pts.push([cx0, cy0]);
-      }
-      arms.push(pts);
-    }
-    return arms;
-  })();
+  function easeInCubic(q) { return q * q * q; }
 
   function busState(t) {
-    let p = 0;
-    if (t >= REV && t <= CRASH) { const q = (t - REV) / (CRASH - REV); p = q * q; }
-    else if (t > CRASH) p = 1 + Math.min(1, (t - CRASH) / 2400) * 0.55;
-    // impact recoil: brief bounce back off the wall
+    let z = bus.y, moving = false;
+    if (t >= DRIVE && t < CRASH) {
+      const q = Math.min(1, (t - DRIVE) / (CRASH - DRIVE));
+      z = bus.y + (CRASH_Z - bus.y) * easeInCubic(q);
+      moving = true;
+    } else if (t >= CRASH) {
+      // swallowed by the maw: glides in-deep, settles, then drops like the
+      // floor gave way — tail lights sink last (drawn additively, still lit)
+      const q = Math.min(1, (t - CRASH) / 2600);
+      z = CRASH_Z + (3.0 * q * (1.55 - q * 0.55)); // glide deep: +2.5 net
+      moving = q < 0.95;
+    }
+    // recoil bounce at impact
     let rec = 0;
-    if (t > CRASH && t < CRASH + 380) rec = Math.sin((t - CRASH) / 380 * Math.PI) * 0.035;
-    const s = p >= 1 ? 0.30 * Math.max(0.45, 1 - (p - 1) * 0.62) : 1 - p * 0.70;
-    const bob = t > IGN ? Math.sin(t * 0.02) * (t < CRASH ? 1.8 : 0.7) : 0;
-    return { p: p - rec, s, bob };
+    if (t > CRASH && t < CRASH + 380) rec = Math.sin((t - CRASH) / 380 * Math.PI) * 0.045;
+    const shx = (t > IGN && t < IGN + 800)
+      ? Math.sin(t * 0.055) * 0.02 * (1 - (t - IGN) / 800) : 0;
+    return { z: z - rec, x: BX + shx, moving };
   }
 
-  function drawBus(bx, baseY, w, t, bs) {
-    const h = w * 1.04;
-    const on = t >= IGN;
-    // ignition shake
-    const shx = (t > IGN && t < IGN + 850) ? Math.sin(t * 0.09) * 1.6 * (1 - (t - IGN) / 850) : 0;
-    x.save();
-    x.translate(bx + shx, bs.bob * 0.4);
-    // NOTE: from here on, coordinates are LOCAL to translate(bx) — do not
-    // add bx inside; that double-offsets the bus off the right edge.
-    // body
-    const body = x.createLinearGradient(0, baseY - h, 0, baseY);
-    body.addColorStop(0, '#e2d355'); body.addColorStop(0.55, '#d8c840'); body.addColorStop(1, '#8a7a20');
-    x.fillStyle = body;
-    x.beginPath();
-    const r = w * 0.14;
-    x.moveTo(-w / 2, baseY);
-    x.lineTo(-w / 2, baseY - h + r);
-    x.quadraticCurveTo(-w / 2, baseY - h, -w / 2 + r, baseY - h);
-    x.lineTo(w / 2 - r, baseY - h);
-    x.quadraticCurveTo(w / 2, baseY - h, w / 2, baseY - h + r);
-    x.lineTo(w / 2, baseY);
-    x.closePath(); x.fill();
-    // rear window (dark)
-    x.fillStyle = '#0c0f14';
-    const ww = w * 0.72, wh = h * 0.26;
-    x.fillRect(-ww / 2, baseY - h + h * 0.10, ww, wh);
-    // faint sheen
-    x.globalAlpha = 0.10; x.fillStyle = '#9fc4ff';
-    x.fillRect(-ww / 2 + ww * 0.1, baseY - h + h * 0.13, ww * 0.28, wh * 0.5);
-    x.globalAlpha = 1;
-    // CITY 45 plate under window
-    x.fillStyle = '#6e5f14';
-    x.font = `bold ${Math.max(5, w * 0.085)}px 'Courier New', monospace`;
-    x.textAlign = 'center';
-    x.fillText('CITY 45', 0, baseY - h + h * 0.45);
-    // engine grille
-    x.strokeStyle = 'rgba(40,34,8,0.55)'; x.lineWidth = Math.max(1, w * 0.012);
-    for (let k = 0; k < 3; k++) {
-      const gy = baseY - h * 0.30 + k * h * 0.07;
-      x.beginPath(); x.moveTo(-w * 0.3, gy); x.lineTo(w * 0.3, gy); x.stroke();
+  // ---- world-space billboard sprite with per-column z clipping ----
+  function drawWorldSprite(img, wx, wy, hscale, alpha, additive) {
+    const dx = wx - player.x, dy = wy - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.12 || dist > MAX_DEPTH) return;
+    let ang = Math.atan2(dy, dx) - player.angle;
+    while (ang > Math.PI) ang -= PI2;
+    while (ang < -Math.PI) ang += PI2;
+    if (Math.abs(ang) > FOV / 2 + 0.4) return;
+    const perp = dist * Math.cos(ang);
+    const focalLen = (W / 2) / Math.tan(FOV / 2);
+    const sx = W / 2 + focalLen * Math.tan(ang);
+    const sh = (H / perp) * hscale;
+    const sw = sh * (img.width / img.height);
+    const floorY = H / 2 + (H / perp) * 0.5;
+    const top = floorY - sh;
+    const left = sx - sw / 2;
+    const numRays = zBuffer.length;
+    const stripW = W / numRays;
+    if (additive) x.globalCompositeOperation = 'lighter';
+    x.globalAlpha = alpha;
+    const cols = Math.ceil(sw);
+    for (let c = 0; c < cols; c++) {
+      const scx = left + c;
+      const si = Math.floor(scx / stripW);
+      if (si < 0 || si >= numRays) continue;
+      if (zBuffer[si] < perp - 0.05) continue;   // wall occludes
+      const texCol = Math.floor((c / sw) * img.width);
+      if (texCol < 0 || texCol >= img.width) continue;
+      x.drawImage(img, texCol, 0, 1, img.height, scx, top, 1.01, sh);
     }
-    // tail lights
-    const flick = (t > IGN && t < IGN + 950) ? (((t * 0.045) | 0) % 3 !== 0) : true;
-    for (const sgn of [-1, 1]) {
-      const lx = sgn * w * 0.38, ly = baseY - h * 0.30;
-      x.fillStyle = '#3a0d0d';
-      x.beginPath(); x.arc(lx, ly, w * 0.055, 0, PI2); x.fill();
-      if (on && flick) {
-        x.fillStyle = '#ff2b1e';
-        x.beginPath(); x.arc(lx, ly, w * 0.05, 0, PI2); x.fill();
-        const g = x.createRadialGradient(lx, ly, 0, lx, ly, w * 0.22);
-        g.addColorStop(0, 'rgba(255,60,40,0.5)'); g.addColorStop(1, 'rgba(255,60,40,0)');
-        x.fillStyle = g;
-        x.beginPath(); x.arc(lx, ly, w * 0.22, 0, PI2); x.fill();
-      }
+    x.globalAlpha = 1;
+    if (additive) x.globalCompositeOperation = 'source-over';
+  }
+
+  function project(wx, wy) {
+    const dx = wx - player.x, dy = wy - player.y;
+    const dist = Math.hypot(dx, dy);
+    let ang = Math.atan2(dy, dx) - player.angle;
+    while (ang > Math.PI) ang -= PI2;
+    while (ang < -Math.PI) ang += PI2;
+    const perp = dist * Math.cos(ang);
+    const focalLen = (W / 2) / Math.tan(FOV / 2);
+    return { sx: W / 2 + focalLen * Math.tan(ang), perp, vis: Math.abs(ang) < FOV / 2 + 0.3 && perp > 0.2 };
+  }
+
+  // perpendicular distance to the breached wall face (row 29.8), safe default
+  function gpPerpSafe() {
+    try { const q = project(BX, 29.8); return (q.vis && q.perp > 0.2) ? q.perp : 10; }
+    catch (e) { return 10; }
+  }
+
+  // ---- procedural bus sprite (rear view) + rubble + ember ----
+  const busImg = (() => {
+    const b = document.createElement('canvas'); b.width = 232; b.height = 204;
+    const bx = b.getContext('2d');
+    const w = 232, h = 172, ox = 0, r = 26;
+    // body
+    const grad = bx.createLinearGradient(0, 32, 0, h);
+    grad.addColorStop(0, '#efd94f'); grad.addColorStop(0.6, '#d9c63e'); grad.addColorStop(1, '#8f7c1e');
+    bx.fillStyle = grad;
+    bx.beginPath();
+    bx.moveTo(ox, h); bx.lineTo(ox, 32 + r);
+    bx.quadraticCurveTo(ox, 32, ox + r, 32);
+    bx.lineTo(ox + w - r, 32); bx.quadraticCurveTo(ox + w, 32, ox + w, 32 + r);
+    bx.lineTo(ox + w, h); bx.closePath(); bx.fill();
+    // black mid stripe
+    bx.fillStyle = '#1c1a10';
+    bx.fillRect(ox, h - 96, w, 14);
+    // window band
+    bx.fillStyle = '#0b0e13';
+    bx.fillRect(ox + 16, 48, w - 32, 52);
+    // sheen
+    bx.globalAlpha = 0.12; bx.fillStyle = '#bcd2ff';
+    bx.fillRect(ox + 26, 52, 52, 20); bx.globalAlpha = 1;
+    // CITY 45
+    bx.fillStyle = '#675a12';
+    bx.font = "bold 26px 'Courier New', monospace"; bx.textAlign = 'center';
+    bx.fillText('CITY 45', w / 2, h - 48);
+    // rivets
+    bx.fillStyle = 'rgba(70,60,14,0.8)';
+    for (let ry = 120; ry < h - 6; ry += 16)
+      for (let rx = 14; rx < w; rx += 36) bx.fillRect(rx, ry, 3, 3);
+    // tail light housings
+    for (const lx of [18, w - 44]) {
+      bx.fillStyle = '#3a0d0d';
+      bx.beginPath(); bx.arc(lx + 13, h - 96, 13, 0, PI2); bx.fill();
+      bx.fillStyle = '#ff2b1e';
+      bx.beginPath(); bx.arc(lx + 13, h - 96, 9, 0, PI2); bx.fill();
+      bx.fillStyle = '#ffd2c8';
+      bx.fillRect(lx + 10, h - 100, 6, 4);
     }
     // bumper
-    x.fillStyle = '#55534a';
-    x.fillRect(-w * 0.52, baseY - h * 0.115, w * 1.04, h * 0.075);
-    // wheels peeking
-    x.fillStyle = '#0a0a0a';
-    x.fillRect(-w * 0.42, baseY - h * 0.05, w * 0.16, h * 0.05);
-    x.fillRect(w * 0.26, baseY - h * 0.05, w * 0.16, h * 0.05);
-    // side shading
-    const sg = x.createLinearGradient(-w / 2, 0, w / 2, 0);
-    sg.addColorStop(0, 'rgba(0,0,0,0.30)'); sg.addColorStop(0.25, 'rgba(0,0,0,0)');
-    sg.addColorStop(0.75, 'rgba(0,0,0,0)'); sg.addColorStop(1, 'rgba(0,0,0,0.30)');
-    x.fillStyle = sg;
-    x.fillRect(-w / 2, baseY - h, w, h);
-    x.restore();
+    bx.fillStyle = '#55534a'; bx.fillRect(ox + 6, h - 26, w - 12, 14);
+    // wheels + mud flaps
+    bx.fillStyle = '#0a0a0a';
+    bx.fillRect(ox + 12, h - 10, 44, 10); bx.fillRect(ox + w - 56, h - 10, 44, 10);
+    // roof hazard tips
+    bx.fillStyle = '#7a5e14';
+    bx.fillRect(ox + 8, 30, 28, 5); bx.fillRect(ox + w - 36, 30, 28, 5);
+    return b;
+  })();
+
+  const chunkImg = (() => {
+    const c = document.createElement('canvas'); c.width = 26; c.height = 20;
+    const cx = c.getContext('2d');
+    cx.fillStyle = '#2a1416';
+    cx.beginPath();
+    cx.moveTo(2, 18); cx.lineTo(5, 4); cx.lineTo(14, 2); cx.lineTo(23, 8); cx.lineTo(20, 18);
+    cx.closePath(); cx.fill();
+    cx.fillStyle = 'rgba(0,0,0,0.4)';
+    cx.fillRect(4, 12, 18, 5);
+    return c;
+  })();
+
+  const emberImg = (() => {
+    const c = document.createElement('canvas'); c.width = 12; c.height = 12;
+    const ex = c.getContext('2d');
+    const g = ex.createRadialGradient(6, 6, 0, 6, 6, 6);
+    g.addColorStop(0, 'rgba(255,220,140,1)'); g.addColorStop(0.4, 'rgba(255,140,50,0.9)');
+    g.addColorStop(1, 'rgba(255,90,30,0)');
+    ex.fillStyle = g; ex.fillRect(0, 0, 12, 12);
+    return c;
+  })();
+
+  // dedicated tail-light sprite: saturated red core — must read as TAIL
+  // LIGHTS among the orange ember sparks, not more fire
+  const tailImg = (() => {
+    const c = document.createElement('canvas'); c.width = 14; c.height = 14;
+    const tx = c.getContext('2d');
+    const g = tx.createRadialGradient(7, 7, 0, 7, 7, 7);
+    g.addColorStop(0, 'rgba(255,70,50,1)'); g.addColorStop(0.35, 'rgba(230,25,15,0.95)');
+    g.addColorStop(1, 'rgba(160,10,5,0)');
+    tx.fillStyle = g; tx.fillRect(0, 0, 14, 14);
+    return c;
+  })();
+
+  // ---- camera + audio direction ----
+  function directCamera(t) {
+    const bs = busState(t);
+    // track the bus from a slightly off-axis position; push in during the
+    // charge; after the impact the camera keeps advancing INTO the maw
+    // (slow dread push) so the hole grows to fill the frame
+    const creep = Math.min(1, Math.max(0, (t - DRIVE) / (FREEZE - DRIVE))) * 3.4;
+    const push = t >= CRASH ? Math.min(1, (t - CRASH) / (FREEZE - CRASH)) : 0;
+    const impact = t >= CRASH ? Math.min(1, (t - CRASH) / 950) : 0;
+    player.x = cam.x - 1.1 + Math.sin(t * 0.0011) * 0.03;
+    player.y = cam.y + creep * 0.6 + push * 6.2 + Math.cos(t * 0.0016) * 0.02;
+    player.angle = Math.PI / 2 + Math.sin(t * 0.0009) * 0.008 - 0.012;
+    FOV = (78 + impact * 14) * DEG;
   }
 
-  function paint(t) {
-    const bs = busState(t);
+  function spawnCrashFX() {
+    // rubble: bursts out of the breach, rains along the wall
+    for (let k = 0; k < 42; k++) {
+      const inward = rng() > 0.5;
+      chunks.push({
+        wx: BX + (rng() - 0.5) * 3.2,
+        wy: 29.6 + (inward ? -rng() * 0.8 : rng() * 1.4),
+        vx: (rng() - 0.5) * 3.2,
+        vy: inward ? -(0.6 + rng() * 1.6) : 0.4 + rng() * 1.8,
+        vz: -(0.4 + rng() * 1.9),
+        g: 3.4, zz: 1.1 + rng() * 0.9,
+        hs: 0.12 + rng() * 0.17, rot: rng() * PI2, vr: (rng() - 0.5) * 6,
+        life: 1, dec: 0.0035 + rng() * 0.0035
+      });
+    }
+    for (let k = 0; k < 14; k++) {
+      // tight ember band hugging the rim — arcs above, never into the pit
+      const spread = 0.8 + rng() * 1.6;
+      embers.push({
+        wx: BX + (rng() - 0.5) * 3.4, wy: 29.55 - spread * 0.45, zz: 0.55 + rng() * 0.65,
+        vx: (rng() - 0.5) * 1.8, vy: -0.9 - rng() * 1.4, vz: 0.5 + rng() * 1.1,
+        g: -0.4, life: 1, dec: 0.009 + rng() * 0.007
+      });
+    }
+    for (let k = 0; k < 30; k++) {
+      dust.push({
+        wx: BX + (rng() - 0.5) * 2.4, wy: 29.4 + rng() * 1.6, zz: 0.2 + rng() * 0.8,
+        vx: (rng() - 0.5) * 0.7, vy: (rng() - 0.5) * 0.7 - (rng() > 0.5 ? 0.5 : 0), vz: -0.25 + rng() * 0.5,
+        hs: 0.9 + rng() * 1.3, a: 0.26 + rng() * 0.18, life: 1, dec: 0.0035
+      });
+    }
+    // rubble lip: static chunks parked along the breach sill — they never
+    // move or fade, and read as a jagged piled rim from any camera angle
+    for (let k = 0; k < 16; k++) {
+      chunks.push({
+        wx: BX + (rng() - 0.5) * 4.6, wy: 29.25 + rng() * 0.75,
+        vx: 0, vy: 0, vz: 0, g: 0, zz: 0.03 + rng() * 0.10,
+        hs: 0.16 + rng() * 0.15, rot: rng() * PI2, vr: 0,
+        life: 1, dec: 0
+      });
+    }
+    // torn-edge shrapnel clinging to the breach borders — big backlit jags,
+    // a couple 2-3x taller spikes per side so they read at a glance
+    for (let k = 0; k < 18; k++) {
+      const side = rng() > 0.5 ? 1 : -1;
+      chunks.push({
+        wx: BX + side * (2.0 + rng() * 0.6), wy: 29.6 + rng() * 0.3,
+        vx: 0, vy: 0, vz: 0, g: 0,
+        zz: 0.35 + rng() * 0.75,
+        hs: 0.28 + rng() * 0.30, rot: side * (1.1 + rng() * 0.8), vr: 0,
+        life: 1, dec: 0
+      });
+    }
+    for (const side of [-1, 1]) {
+      for (let k = 0; k < 2; k++) {
+        chunks.push({
+          wx: BX + side * (2.15 + rng() * 0.35), wy: 29.7,
+          vx: 0, vy: 0, vz: 0, g: 0,
+          zz: 0.25 + rng() * 0.30,
+          hs: 0.85 + rng() * 0.35, rot: side * (0.7 + rng() * 0.5), vr: 0,
+          life: 1, dec: 0
+        });
+      }
+    }
+  }
+
+  function stepFX(dt) {
+    const s = dt / 1000;
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      const c2 = chunks[i];
+      c2.wx += c2.vx * s; c2.wy += c2.vy * s; c2.zz += c2.vz * s;
+      c2.vz -= c2.g * s; c2.rot += c2.vr * s; c2.life -= c2.dec;
+      if (c2.zz < 0.05) { c2.zz = 0.05; c2.vz *= -0.35; c2.vx *= 0.7; c2.vy *= 0.7; }
+      if (c2.life <= 0) chunks.splice(i, 1);
+    }
+    for (let i = embers.length - 1; i >= 0; i--) {
+      const e = embers[i];
+      e.wx += e.vx * s; e.wy += e.vy * s; e.zz += e.vz * s;
+      e.vz += e.g * s; e.life -= e.dec;
+      if (e.life <= 0) embers.splice(i, 1);
+    }
+    for (let i = dust.length - 1; i >= 0; i--) {
+      const d = dust[i];
+      d.wx += d.vx * s; d.wy += d.vy * s; d.zz += d.vz * s;
+      d.hs += 0.25 * s; d.life -= d.dec;
+      if (d.life <= 0) dust.splice(i, 1);
+    }
+  }
+
+  function drawFX() {
+    // airborne rubble: world-space billboards, z-clipped, rotation + bounce
+    for (const c2 of chunks) {
+      const pr = project(c2.wx, c2.wy);
+      if (!pr.vis) continue;
+      const sh = (H / pr.perp) * c2.hs;
+      const sw = sh * 1.3;
+      const cy = H / 2 - (c2.zz - 0.5) * sh;
+      const numRays = zBuffer.length;
+      const si = Math.floor(pr.sx / (W / numRays));
+      if (si < 0 || si >= numRays || zBuffer[si] < pr.perp - 0.05) continue;
+      x.save();
+      x.translate(pr.sx, cy);
+      x.rotate(c2.rot);
+      x.globalAlpha = Math.min(1, c2.life * 1.6);
+      x.drawImage(chunkImg, -sw / 2, -sh / 2, sw, sh);
+      x.restore();
+    }
+    // embers: additive glows rising off the breach
+    x.globalCompositeOperation = 'lighter';
+    for (const e of embers) {
+      const pr = project(e.wx, e.wy);
+      if (!pr.vis) continue;
+      const sh = (H / pr.perp) * 0.20;
+      const ey = H / 2 - (e.zz - 0.5) * sh;
+      const numRays = zBuffer.length;
+      const si = Math.floor(pr.sx / (W / numRays));
+      if (si < 0 || si >= numRays || zBuffer[si] < pr.perp - 0.05) continue;
+      x.globalAlpha = Math.min(1, e.life) * 0.9;
+      x.drawImage(emberImg, pr.sx - sh / 2, ey - sh / 2, sh, sh);
+    }
+    x.globalCompositeOperation = 'source-over';
+    x.globalAlpha = 1;
+    for (const d of dust) {
+      const pr = project(d.wx, d.wy);
+      if (!pr.vis) continue;
+      const sh = (H / pr.perp) * d.hs;
+      x.globalAlpha = d.a * Math.min(1, d.life);
+      const g = x.createRadialGradient(pr.sx, H / 2 - (d.zz - 0.5) * sh, 0, pr.sx, H / 2 - (d.zz - 0.5) * sh, sh);
+      g.addColorStop(0, `rgba(122,104,92,${0.55 * d.a * Math.min(1, d.life) + 0.2})`);
+      g.addColorStop(1, 'rgba(122,104,92,0)');
+      x.fillStyle = g;
+      x.beginPath(); x.arc(pr.sx, H / 2 - (d.zz - 0.5) * sh, sh, 0, PI2); x.fill();
+    }
+    x.globalAlpha = 1;
+  }
+
+  function flashScreen(strength) {
+    flashL.style.transition = 'opacity 0.04s';
+    flashL.style.opacity = String(strength);
+    setTimeout(() => {
+      flashL.style.transition = 'opacity 0.9s ease';
+      flashL.style.opacity = '0';
+    }, 110);
+  }
+  let flashClearTimer = 0;
+
+  function paint(t, dt) {
     if (t >= REV && !revved) { revved = true; endingAudio.rev && endingAudio.rev(); }
     if (t >= CRASH && !boomed) {
       boomed = true;
       endingAudio.boom && endingAudio.boom();
-      flash = 1;
-      cutScene();
-      // rubble: some tumbles along the depot floor, some hurled at the lens
-      for (let k = 0; k < 46; k++) {
-        const toward = rng() > 0.45;
-        chunks.push({
-          x: holeCx + (rng() - 0.5) * holeW * 1.05,
-          y: holeTop + holeH * (0.15 + rng() * 0.7),
-          vx: (rng() - 0.5) * W * 0.030 * (toward ? 2.4 : 1),
-          vy: -H * (0.003 + rng() * 0.014) * (toward ? 1.5 : 1),
-          g: H * (toward ? 0.00030 : 0.00055),
-          w: W * (toward ? 0.005 + rng() * 0.009 : 0.008 + rng() * 0.020),
-          rot: rng() * PI2, vr: (rng() - 0.5) * 0.30,
-          z: toward ? 1.15 + rng() * 1.5 : 1,
-          life: 1, dec: toward ? 0.013 : 0.006,
-          col: rng() > 0.5 ? '#2a1416' : '#160a0b'
-        });
+      flashScreen(0.92);
+      // the real wall breach: rows 29-31 (incl. map border → void black
+      // beyond), cols 14-18 — engine raycasts it live
+      for (let cx2 = 14; cx2 <= 18; cx2++) {
+        map[29][cx2] = 0; map[30][cx2] = 0; map[31][cx2] = 0;
       }
-      // sparks
-      for (let k = 0; k < 26; k++) embers.push({
-        x: holeCx + (rng() - 0.5) * holeW, y: holeCy + (rng() - 0.5) * holeH * 0.6,
-        vx: (rng() - 0.5) * W * 0.012, vy: -H * (0.002 + rng() * 0.010),
-        life: 1, r: 1 + rng() * 2
-      });
-    }
-    // rolling dust while the bus charges, then the breach belches its own
-    if (t > REV && t < CRASH) {
-      puffClock += 16;
-      if (puffClock > 90) {
-        puffClock = 0;
-        const bw0 = W * 0.34 * bs.s, by0 = H * 0.86 - (H * 0.86 - wallBase) * bs.p;
-        puffs.push({
-          x: holeCx + (rng() - 0.5) * bw0 * 0.9, y: by0 - bw0 * 0.02,
-          r: bw0 * (0.05 + rng() * 0.05), a: 0.20 + rng() * 0.10,
-          vx: (rng() - 0.5) * W * 0.002, vy: -H * 0.0012,
-          vr: 0.5, life: 1, dec: 0.008
-        });
-      }
-    } else if (t > CRASH && t < CRASH + 2400) {
-      dustClock += 16;
-      if (dustClock > 70) {
-        dustClock = 0;
-        puffs.push({
-          x: holeCx + (rng() - 0.5) * holeW, y: holeTop + holeH * (0.1 + rng() * 0.6),
-          r: holeW * (0.05 + rng() * 0.09), a: 0.26 + rng() * 0.12,
-          vx: (rng() - 0.5) * W * 0.004, vy: -H * (0.0008 + rng() * 0.0022),
-          vr: holeW * 0.0016 + 0.4, life: 1, dec: 0.004
-        });
-      }
-    }
-
-    const k = t < CRASH ? 0 : Math.max(0, 1 - (t - CRASH) / 1300);
-    x.setTransform(1, 0, 0, 1, 0, 0);
-    x.clearRect(0, 0, W, H);
-    // camera kick on impact + lingering rattle
-    x.translate(Math.sin(t * 0.23) * k * W * 0.012, Math.cos(t * 0.29) * k * H * 0.016);
-
-    const beyond = bs.p > 1;
-    const busY = beyond ? holeBot + H * 0.006
-                        : (H * 0.86) - (H * 0.86 - wallBase) * Math.min(bs.p, 1);
-    const bw = W * 0.34 * bs.s;
-
-    if (beyond) {
-      // bus is behind the wall plane: draw it first, the punctured wall occludes it
-      const ga = Math.max(0, 1 - (bs.p - 1) * 1.7);
-      if (ga > 0.02) { x.globalAlpha = ga; drawBus(vpxCenter(), busY, bw, t, bs); x.globalAlpha = 1; }
-      x.drawImage(sceneC || scene, 0, 0);
-      // molten rim glow cooling after the blast
-      const glow = Math.max(0, 1 - (t - CRASH) / 1800);
-      if (glow > 0) {
-        const rg = x.createRadialGradient(holeCx, holeCy, 0, holeCx, holeCy, holeW * 0.62);
-        rg.addColorStop(0, `rgba(255,140,50,${0.30 * glow})`);
-        rg.addColorStop(1, 'rgba(255,90,30,0)');
-        x.fillStyle = rg;
-        x.fillRect(holeCx - holeW * 0.75, holeTop - holeH * 0.75, holeW * 1.5, holeH * 2.5);
-      }
-      // tail lights lingering in the dust
-      const tla = Math.max(0, 1 - (bs.p - 1) * 1.4) * 0.9;
-      if (tla > 0.02) {
-        x.globalAlpha = tla;
-        x.fillStyle = '#ff2b1e';
-        const h2 = bw * 1.04;
-        for (const sgn of [-1, 1]) {
-          x.beginPath();
-          x.arc(holeCx + sgn * bw * 0.38, busY - h2 * 0.30, Math.max(1.5, bw * 0.05), 0, PI2);
-          x.fill();
+      const grow = setInterval(() => {
+        // hole keeps widening for ~2s after impact (cols 13-19 all rows)
+        for (let cx2 = 13; cx2 <= 19; cx2++) {
+          map[29][cx2] = 0; map[30][cx2] = 0; map[31][cx2] = 0;
         }
-        x.globalAlpha = 1;
+      }, 900);
+      setTimeout(() => clearInterval(grow), 2000);
+      spawnCrashFX();
+      setTimeout(() => { try { endingAudio.ctx.currentTime; } catch (e) {} }, 0);
+    }
+    directCamera(t);
+    if (holdT < 0) stepFX(dt);   // holds are deterministic snapshots
+    // post-crash smoke lazily belching off the wreck
+    if (t > CRASH && holdT < 0) {
+      smokeClock += dt;
+      if (smokeClock > 260) {
+        smokeClock = 0;
+        const bs2 = busState(t);
+        dust.push({
+          wx: bs2.x + (rng() - 0.5) * 1.4, wy: bs2.z - 0.3, zz: 0.55 + rng() * 0.3,
+          vx: (rng() - 0.5) * 0.3, vy: -0.35 - rng() * 0.3, vz: 0.12 + rng() * 0.1,
+          hs: 0.7 + rng() * 0.9, a: 0.20 + rng() * 0.14, life: 1, dec: 0.0038
+        });
       }
-    } else {
-      x.drawImage(boomed && sceneC ? sceneC : scene, 0, 0);
-      // cracks crawling out while the bus charges
-      if (bs.p > 0.78 && !boomed) {
-        x.globalAlpha = Math.min(1, (bs.p - 0.78) / 0.22) * 0.55;
-        x.strokeStyle = 'rgba(10,4,5,1)'; x.lineWidth = Math.max(1, W * 0.0028);
-        for (const arm of CRACKS) {
-          x.beginPath();
-          arm.forEach((pt, kk) => { if (!kk) x.moveTo(pt[0], pt[1]); else x.lineTo(pt[0], pt[1]); });
-          x.stroke();
-        }
-        x.globalAlpha = 1;
+    }
+
+    // cinematic grade: warm light bleeding around the breach — drawn on the
+    // game canvas (already rendered this frame by gameLoop) beneath our sprites
+    try {
+      const gp = project(BX, 29.8);
+      if (gp.vis && gp.perp < 26) {
+        // spill light lands on the FLOOR in front of the hole — the pit
+        // interior itself stays void-black so the maw reads as a hole
+        const R = Math.min(W, (H / gp.perp) * 1.9);
+        const pre = t < CRASH;
+        const inten = pre ? 0.04 : Math.min(0.09, 0.04 + 0.05 * Math.max(0, 1 - (t - CRASH) / 8000));
+        const col = pre ? '255,190,110' : '255,150,70';
+        const gy = H * 0.80;
+        // glow clipped BELOW the rim line — nothing blooms up into the maw
+        const rimY = H / 2 + (H / gp.perp) * 0.5;
+        x.save();
+        x.beginPath();
+        x.rect(0, rimY, W, H - rimY);
+        x.clip();
+        const g = ctx.createRadialGradient(gp.sx, gy, 0, gp.sx, gy, R);
+        g.addColorStop(0, `rgba(${col},${inten})`);
+        g.addColorStop(0.55, `rgba(${col},${inten * 0.35})`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+        x.restore();
       }
-      drawBus(vpxCenter(), busY, bw, t, bs);
-    }
+    } catch (err) { /* grade is cosmetic */ }
 
-    // detonation flash
-    if (flash > 0) {
-      const fr = x.createRadialGradient(holeCx, holeCy, 0, holeCx, holeCy, W * (0.4 + (1 - flash) * 0.5));
-      fr.addColorStop(0, `rgba(255,236,190,${0.85 * flash})`);
-      fr.addColorStop(0.35, `rgba(255,150,60,${0.5 * flash})`);
-      fr.addColorStop(1, 'rgba(255,120,40,0)');
-      x.fillStyle = fr;
-      x.fillRect(0, 0, W, H);
-      flash = Math.max(0, flash - 0.011);
+    // game canvas already renders the world via gameLoop(); draw the bus
+    // billboard + particles on the overlay canvas (z-clipped above).
+    if (!frozen) {
+      x.clearRect(0, 0, W, H);
+      const bs = busState(t);
+      // swallow: fade the body fast once it crosses the sill — silhouette
+      // against the void reads "sinking into black," not "lit by glow"
+      let alpha = 1;
+      if (bs.z > CRASH_Z + 0.7) {
+        alpha = Math.max(0, 1 - (bs.z - (CRASH_Z + 0.7)) / 0.9);
+      }
+      // tail lights: bright pulse through the charge; after the swallow just
+      // two slim sinking points — no flare blob, the void stays black
+      const tw = t >= IGN
+        ? (bs.z > CRASH_Z + 1.1 ? 0.22 * alpha : 0.55 + 0.45 * Math.sin(t * 0.03))
+        : 0.25;
+      // tail lights sink a beat slower than the body — last things to go
+      const lzoff = bs.z > CRASH_Z ? 0.16 : -0.02;
+      const lsz = bs.z > CRASH_Z ? 0.26 : 0.16;
+      drawWorldSprite(tailImg, bs.x - 0.32, Math.max(bs.z - lzoff, bs.z - 0.16), lsz, tw, true);
+      drawWorldSprite(tailImg, bs.x + 0.32, Math.max(bs.z - lzoff, bs.z - 0.16), lsz, tw, true);
+      if (alpha > 0.02) drawWorldSprite(busImg, bs.x, bs.z, 1.72, alpha, false);
+      drawFX();
     }
-
-    // rubble chunks
-    for (let kk = chunks.length - 1; kk >= 0; kk--) {
-      const c2 = chunks[kk];
-      c2.x += c2.vx; c2.y += c2.vy; c2.vy += c2.g; c2.rot += c2.vr; c2.life -= c2.dec;
-      if (c2.z > 1) c2.z += 0.02; // near chunks swell as they fly at the lens
-      if (c2.z === 1 && c2.y > H * 0.90 && c2.vy > 0) { c2.y = H * 0.90; c2.vy *= -0.38; c2.vx *= 0.85; }
-      if (c2.life <= 0) { chunks.splice(kk, 1); continue; }
-      x.save();
-      x.translate(c2.x, c2.y); x.rotate(c2.rot);
-      x.globalAlpha = Math.min(1, c2.life * 1.4);
-      x.fillStyle = c2.col;
-      x.fillRect(-c2.w * c2.z / 2, -c2.w * 0.36 * c2.z, c2.w * c2.z, c2.w * 0.72 * c2.z);
-      x.fillStyle = 'rgba(0,0,0,0.35)';
-      x.fillRect(-c2.w * c2.z / 2, c2.w * 0.10 * c2.z, c2.w * c2.z, c2.w * 0.20 * c2.z);
-      x.restore();
-    }
-    x.globalAlpha = 1;
-    // embers
-    for (let kk = embers.length - 1; kk >= 0; kk--) {
-      const e = embers[kk];
-      e.x += e.vx; e.y += e.vy; e.vy += H * 0.00012; e.life -= 0.02;
-      if (e.life <= 0) { embers.splice(kk, 1); continue; }
-      x.globalAlpha = Math.max(0, e.life);
-      x.fillStyle = e.life > 0.55 ? '#ffcf7a' : '#ff7a30';
-      x.fillRect(e.x, e.y, e.r, e.r);
-    }
-    x.globalAlpha = 1;
-    // dust
-    for (let kk = puffs.length - 1; kk >= 0; kk--) {
-      const p = puffs[kk];
-      p.x += p.vx; p.y += p.vy; p.r += p.vr; p.life -= p.dec || 0.006;
-      if (p.life <= 0) { puffs.splice(kk, 1); continue; }
-      const pg = x.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-      pg.addColorStop(0, `rgba(118,101,90,${p.a * Math.min(1, p.life)})`);
-      pg.addColorStop(1, 'rgba(118,101,90,0)');
-      x.fillStyle = pg;
-      x.beginPath(); x.arc(p.x, p.y, p.r, 0, PI2); x.fill();
-    }
-    // dust haze clouding the lens as the cloud washes back over us
-    const veil = t < CRASH ? 0 : Math.min(0.46, ((t - CRASH) / 3700) * 0.46);
-    if (veil > 0.004) {
-      x.fillStyle = `rgba(70,56,48,${veil})`;
-      x.fillRect(0, 0, W, H);
-    }
-
     if (t >= TEXT && !textShown) {
       textShown = true;
       document.getElementById('ending-text').classList.add('show');
     }
   }
 
-  function vpxCenter() { return W / 2; }
-
   function frame(ts) {
     if (!startTs) startTs = ts;
-    const t = ts - startTs;
-    if (t >= FREEZE) { paint(FREEZE); freeze(); return; }
-    paint(t);
+    const t = holdT >= 0 ? holdT : (seekT >= 0 ? seekT : (ts - startTs));
+    const dt = Math.min(50, (seekT >= 0 || holdT >= 0) ? 16 : ts - (runEndingCinematic._last || ts));
+    runEndingCinematic._last = ts;
+    const prevSeek = seekT; seekT = -1;
+    const tUse = prevSeek >= 0 ? prevSeek : t;
+    runEndingCinematic._now = tUse;
+    runEndingCinematic._boomed = boomed;
+    if (tUse >= FREEZE) { paint(FREEZE, dt); freeze(); return; }
+    paint(tUse, dt);
     raf = requestAnimationFrame(frame);
   }
-  // depot scene fades in from black after the fade-to-black completes
-  setTimeout(() => { raf = requestAnimationFrame(frame); }, 1150);
+
+  // black hold (fade-to-black completes on its own #ending-black layer,
+  // leaving the overlay transparent so the live raycaster shows through)
+  // → release the black, then run the shot. | window._endingSeek(t) for tests.
+  blackL.style.opacity = '1';
+  window._endingSeek = v => { seekT = v; holdT = v; blackL.style.opacity = '0'; };
+  window._endingHold = v => { holdT = v; };
+  setTimeout(() => {
+    blackL.style.opacity = '0';
+    runEndingCinematic._last = performance.now();
+    raf = requestAnimationFrame(frame);
+  }, 1250);
 }
 
 // ---- DEEP LINK — ?level=N boots straight into that level (1-based) ----
