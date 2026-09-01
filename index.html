@@ -46,10 +46,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font
 
 
 #message {
-  position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+  position: absolute; top: 40%; right: 24px; transform: translateY(-50%);
   color: #0f0; font-size: 28px; font-weight: bold; letter-spacing: 4px;
   text-shadow: 0 0 20px #0f0, 0 0 40px #0f088;
-  text-align: center; display: none;
+  text-align: right; display: none;
 }
 
 #damage-flash {
@@ -148,8 +148,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font
   background: #fff8e8; opacity: 0; pointer-events: none;
 }
 #ending-text {
-  position: absolute; top: 30%; left: 0; width: 100%;
-  text-align: center; font-family: 'Courier New', monospace;
+  position: absolute; top: 30%; right: 24px;
+  text-align: right; font-family: 'Courier New', monospace;
   font-size: clamp(17px, 4.6vw, 30px); letter-spacing: 6px;
   color: #e6ddc4; text-shadow: 0 0 22px rgba(230, 214, 160, 0.35);
   opacity: 0; transition: opacity 1.6s ease;
@@ -15896,10 +15896,11 @@ gameLoop();
     // Paint over the passenger door for the title shot only (snapshot works on
     // initLevel's map copy) so the hull reads as one continuous body.
     map[17][16] = 9;
-    // Wide shot: camera set back, FOV boosted so the bus fills
-    // the frame with a small margin on each side.
-    player.x = 16.5; player.y = 24.2; player.angle = -Math.PI / 2;
-    const savedFOV = FOV; FOV = 75 * DEG;
+    // Corner shot: camera SW of the near vertex (13,17), aimed at the
+    // corner so the left face (x13 side) and right face (y17 end, with the
+    // red accent) meet just left of frame center — matches the hero shot.
+    player.x = 13.8; player.y = 19.0; player.angle = -1.9;
+    const savedFOV = FOV; FOV = 74 * DEG;
     const realW = canvas.width, realH = canvas.height;
     // Render at snapshot size on the main canvas, then copy pixels over
     canvas.width = snapCanvas.width; canvas.height = snapCanvas.height;
