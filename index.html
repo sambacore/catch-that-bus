@@ -15548,18 +15548,38 @@ function render() {
       zBuffer[i] = MAX_DEPTH;
       // Escape ray — no wall up to MAX_DEPTH. In the ending cinematic's
       // breached depot this is the maw: paint void black ONLY within the
-      // breached wall's own silhouette (its slice height at the breach
-      // plane), so the hole reads as a gap IN the wall — sky above,
-      // floor below — never a full-height stripe swallowing the screen.
+      // breached wall's own silhouette at the breach plane — inset 50px
+      // per side, corners rounded (r=50, clamped like CSS border-radius)
+      // so the opening reads as a bounded, soft-cornered gap in the wall:
+      // sky above, floor below, never a stripe.
       if (endingActive && rdy > 0.0001 && player.y < 29) {
         const tC = (29.0 - player.y) / rdy;              // cross breach plane
-        const mc = Math.floor(player.x + tC * rdx);
-        if (mc >= 13 && mc <= 19) {                      // through the breach
+        const mxF = player.x + tC * rdx;                 // world x at plane
+        if (mxF >= 12.999 && mxF <= 20.001) {            // within breach span
           const perpW = tC * Math.cos(rayAngle - player.angle);
           if (perpW > 0.05) {
+            const focalLen = (W / 2) / Math.tan(FOV / 2);
+            const sxOf = ax => W / 2 + focalLen *
+              Math.tan(Math.atan2(29.0 - player.y, ax - player.x) - player.angle);
+            const sA = sxOf(13), sB = sxOf(20);          // edge screen x's
+            // NB: this projection mirrors world-x on screen (west → right),
+            // so min/max before insetting 50px per side
+            const L = Math.min(sA, sB) + 50, R = Math.max(sA, sB) - 50;
             const apH = H / perpW;                       // wall slice height
-            ctx.fillStyle = '#000';
-            ctx.fillRect(i * stripW, viewY - apH / 2, stripW + 0.6, apH);
+            const rC = Math.min(50, (R - L) / 2, apH / 2);
+            const ccx = i * stripW + stripW / 2;
+            if (ccx > L && ccx < R && rC > 0) {
+              let cut = 0;                               // corner-circle inset
+              const dl = (L + rC) - ccx;
+              if (dl > 0) cut = rC - Math.sqrt(Math.max(0, rC * rC - dl * dl));
+              const dr = ccx - (R - rC);
+              if (dr > 0) cut = Math.max(cut, rC - Math.sqrt(Math.max(0, rC * rC - dr * dr)));
+              const topA = viewY - apH / 2 + cut, botA = viewY + apH / 2 - cut;
+              if (botA - topA > 0.5) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(i * stripW, topA, stripW + 0.6, botA - topA);
+              }
+            }
           }
         }
       }
@@ -16012,6 +16032,11 @@ function startEnding() {
   overlay.style.display = 'block';
   overlay.style.background = 'transparent';
   overlay.style.opacity = '1';
+  // Flush layout before touching the black layer: it was display:none a
+  // tick ago, so an immediate opacity bump would SNAP to black instead of
+  // transitioning. After the flush, 0→1 rides the CSS 1.15s ease — a real
+  // game fade-out before the engine shot takes over.
+  void document.getElementById('ending-black').offsetWidth;
   document.getElementById('ending-black').style.opacity = '1';
   endingAudio();
   runEndingCinematic(cnv);
@@ -16493,17 +16518,17 @@ function runEndingCinematic(cnv) {
     raf = requestAnimationFrame(frame);
   }
 
-  // black hold (fade-to-black completes on its own #ending-black layer,
-  // leaving the overlay transparent so the live raycaster shows through)
-  // → release the black, then run the shot. | window._endingSeek(t) for tests.
-  blackL.style.opacity = '1';
+  // black hold: the game fade-out (1.15s CSS) plays first over the frozen
+  // gameplay frame; once black is fully down, lift it and start the engine
+  // shot (reads as the scene fading in from black). Seek hooks jump
+  // straight out of black for tests, bypassing both timers.
   window._endingSeek = v => { seekT = v; holdT = v; blackL.style.opacity = '0'; };
   window._endingHold = v => { holdT = v; };
   setTimeout(() => {
     blackL.style.opacity = '0';
     runEndingCinematic._last = performance.now();
     raf = requestAnimationFrame(frame);
-  }, 1250);
+  }, 1900);
 }
 
 // ---- DEEP LINK — ?level=N boots straight into that level (1-based) ----
